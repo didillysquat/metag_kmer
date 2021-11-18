@@ -6,6 +6,7 @@ import pickle
 from skbio.diversity import beta_diversity
 from skbio.stats.ordination import pcoa
 import matplotlib.pyplot as plt
+from matplotlib.collections import PatchCollection
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -104,8 +105,65 @@ class JellyCount:
         plt.tight_layout()
         plt.savefig("LDA_POC.png", dpi=600)
     
-    def do_PCA(self):
-        self.normalised_df =  self.df_var_sorted.iloc[:,:1000]
+    def kmer_mapping(self):
+        """
+        Write out all of the kmers with their ranks
+        Then run mmseqs against our 195 contig to map them to the contig
+        THen read this back in and plot up the info
+        """
+
+        # Write out the kmers
+        if not os.path.exists("poc_kmer_mapping/var_ranked_kmers_poc.fa0"):
+            with open("var_ranked_kmers_poc.fa", "w") as f:
+                for i, kmer in enumerate(list(self.df_var_sorted)):
+                    f.write(f">{i}\n")
+                    f.write(f"{kmer}\n")
+        
+        # The boundaries are as follow (it is inverse)
+        # 28S = < 386
+        # ITS2 = 386-764
+        # 5.8s = 764 - 908
+        # ITS1 = 908-1329
+        # 18S = > 1329
+
+        # Now for each for each of the kmers plot a line that spans the region to which it maps
+        mapps = [[],[]]
+        with open("poc_kmer_mapping/var_ranked_on_195.results.sam", "r") as f:
+            var_ranked_results = [_.rstrip() for _ in f]
+        
+        for line in var_ranked_results[2:]:
+            comp = line.split("\t")
+            if comp[1] == '16' or comp[1] == '0':
+                # revcomp mapped
+                mapps[0].append(comp[0])
+                mapps[1].append(comp[3])
+            elif comp[1] == '4':
+                # not mapped
+                continue
+            else:
+                foo = "bar"
+            foo = "bar"
+        x = [int(_) for _ in mapps[0]]
+        y = [int(_) for _ in mapps[1]]
+        fig, ax = plt.subplots(ncols=1, nrows=1, figsize=(15,5))
+        ax.scatter(x, y, zorder=2, s=2, alpha=0.5)
+        ax.set_xlim(0, x[-1])
+        ax.hlines([386,764,908,1329], xmin=0, xmax=x[-1], colors="black")
+        ax.text(s="28S", y=386/2, x=x[-1]/2, ha="center", va="center", fontweight="bold", fontsize=16)
+        ax.text(s="ITS2", y=386+((764-386)/2), x=x[-1]/2, ha="center", va="center", fontweight="bold", fontsize=16)
+        ax.text(s="5.8S", y=764+((908-764)/2), x=x[-1]/2, ha="center", va="center", fontweight="bold", fontsize=16)
+        ax.text(s="ITS1", y=908+((1329-908)/2), x=x[-1]/2, ha="center", va="center", fontweight="bold", fontsize=16)
+        ax.text(s="18S", y=1329+((ax.get_ylim()[1]-1329)/2), x=x[-1]/2, ha="center", va="center", fontweight="bold", fontsize=16)
+        ax.set_xlabel("kmers ranked by variance; 0 is highest")
+        ax.set_ylabel("start of mapping position along the rDNA gene (bp)")
+        ax.set_title("kmer mapping sorted by variance rank")
+        plt.tight_layout()
+        plt.savefig("kmer_mapping_sorted_by_var_rank.png", dpi=600)
+        foo = "bar"
+
+
+    def do_PCA(self, top_kmer_n=250):
+        self.normalised_df =  self.df_var_sorted.iloc[:,:top_kmer_n]
         # Let's try PCA
         x = self.normalised_df.values
         # Standardizing the features
@@ -117,11 +175,21 @@ class JellyCount:
         fig, ax_arr = plt.subplots(ncols=3, nrows=1, figsize=(15,5))
 
         colours = [self.svd_color_dict[self.meta_info_df.at[_,"svd"]] for _ in principalDf.index]
+        explained = [100*(_/pca.explained_variance.sum()) for _ in pca.explained_variance_]
         ax_arr[0].scatter(principalDf["PC1"], principalDf["PC2"], c=colours)
+        ax_arr[0].set_xlabel(f"PC1: {explained[0]:.2f}%")
+        ax_arr[0].set_ylabel(f"PC2: {explained[1]:.2f}%")
+        
         ax_arr[1].scatter(principalDf["PC1"], principalDf["PC3"], c=colours)
+        ax_arr[1].set_xlabel(f"PC1: {explained[0]:.2f}%")
+        ax_arr[1].set_ylabel(f"PC3: {explained[2]:.2f}%")
+        ax_arr[1].set_title(f"PCA of top {top_kmer_n} highest variance kmers")
+        
         ax_arr[2].scatter(principalDf["PC1"], principalDf["PC4"], c=colours)
-
-        plt.savefig("PCA_poc.png", dpi=600)
+        ax_arr[2].set_xlabel(f"PC1: {explained[0]:.2f}%")
+        ax_arr[2].set_ylabel(f"PC4: {explained[3]:.2f}%")
+        
+        plt.savefig(f"PCA_poc_{top_kmer_n}.png", dpi=600)
 
     def do_PCoA(self):
         fig, ax_arr = plt.subplots(ncols=3, nrows=1, figsize=(15,5))
@@ -154,7 +222,7 @@ class JellyCount:
         ax_arr[2].set_xlabel("PC1")
         ax_arr[2].set_ylabel("PC4")
         
-    def investigate_LDA_kmers(self, top_kmer_n=50):
+    def investigate_LDA_kmers(self, top_kmer_n=250):
         # The LDA results are pretty amazing. They show us that there is the information in the stacks to differentiate between the groups
         # However, this is supervised so not so great for us.
         # We need to use this data to work out which the good kmers are and which the bad kmers are and then look
@@ -164,6 +232,28 @@ class JellyCount:
         # e.g. in the top 50 most abundant kmers of any sample. Something like that.
 
         # Let's start by working with the 50 most variable kmers and try to identify their character
+        fig, ax = plt.subplots(ncols=1, nrows=1)
+        var_ser = self.df_var_sorted.var(axis=0)
+        hist_results = ax.hist(var_ser.values, bins=100)
+        rectangles = hist_results[2]
+        rect_list = []
+        rectangles = sorted(rectangles, key=lambda x: x._x0, reverse=True)
+        cumulative = 0
+        new_rects = []
+        ax.set_ylim(0,50)
+        num_kmers = len(self.df_var_sorted.columns)
+        max_var = var_ser.max()
+        var_cutoff = max_var * 0.75
+        for i in range(len(rectangles)):
+            if rectangles[i]._x0 > var_cutoff:
+                rectangles[i]._set_facecolor((1,0,0,1))
+                # new_rect._facecolor = (255,0,0,1)
+                # new_rects.append(new_rect)
+            # else:
+            #     new_rects.append(rect)
+            # cumulative += rectangles[i]._height
+        plt.savefig(f"POC_variance_hists.png", dpi=600)
+        plt.close()
 
         self.normalised_top_var_df =  self.df_var_sorted.iloc[:,:top_kmer_n]
 
@@ -172,12 +262,13 @@ class JellyCount:
         # Fist look at highest relative abundance vs lowest relative abundance
         # and see where the good kmers lie
         fig, ax = plt.subplots(ncols=1, nrows=1)
-        top_kmers = self.normalised_top_var_df.columns.values
+        # top_kmers = self.normalised_top_var_df.columns.values
+        top_kmers = ['GATGGGGCCGGGACGCGCCCG', 'GACTGCCGTGCTAGCTGACTT']
         x_max_vals_non_top = [v for k, v in self.normalised_df.max(axis=0).items() if k not in top_kmers]
         x_max_vals_top = [v for k, v in self.normalised_df.max(axis=0).items() if k  in top_kmers]
         x_min_vals_non_top = [v for k, v in self.normalised_df.min(axis=0).items() if k not in top_kmers]
         x_min_vals_top = [v for k, v in self.normalised_df.min(axis=0).items() if k  in top_kmers]
-        ax.scatter(x_max_vals_non_top, x_min_vals_non_top, color="black", s=2, alpha=0.1, zorder=1)
+        ax.scatter(x_max_vals_non_top, x_min_vals_non_top, color="black", s=2, alpha=0.01, zorder=1)
         ax.scatter(x_max_vals_top, x_min_vals_top, color="red", s=4, alpha=1, zorder=2)
         ax.set_xlabel("Maximum relative abundance of kmer across all samples")
         ax.set_ylabel("Minimum relative abundance of kmer across all samples")
@@ -244,7 +335,7 @@ class JellyCount:
         # Let's see if we can plot up just the two kmers as x and y and see where we get to
         fig, ax = plt.subplots(ncols=1, nrows=1, figsize=(5,5))
         ax.scatter(self.normalised_df[two_kmers[0]], self.normalised_df[two_kmers[1]], c=[self.svd_color_dict[self.meta_info_df.at[_,'svd']] for _ in self.normalised_df.index])
-
+        plt.close()
         # best_scaling_kmers = set()
         # for i in range(4):
         #     scaling = pd.Series(abs(clf.scalings_[:,i]), index=self.normalised_top_var_df.columns)
@@ -253,9 +344,94 @@ class JellyCount:
         
         foo = "bar"
 
-        # Don't forget to check to see at what depth we'll need to be sequencing to pickup the meaningful kmers
+        # Let's investigate the informative kmers from the LDA further.
+        # Let's pull out the informative and the on informative
+        # Then let's look a their variance across samples and plot that up
+        # as mean and S.D.
+
+        # A dict that holds the scaling values when working with the 50 most variable kmers
+        # that provides the value that, above which we classify the kmer as a 'good' and below a 'bad'
+        # for each of the scalings
+        if top_kmer_n == 50:
+            good_class_dict = {0:100, 1:50, 2:40, 3:30}
+        elif top_kmer_n == 250:
+            good_class_dict = {0:2, 1:1, 2:0.5, 3:0.4}
+        
+        good_kmers = set()
+        top_kmers = set()
+        for k, v in good_class_dict.items():
+            ser = pd.Series(abs(clf.scalings_[:,k]), index=self.normalised_top_var_df.columns)
+            good_kmers.update(ser[ser > v].index.values)
+            top_kmers.add(ser.index.values[np.where(ser.values == ser.max())[0]][0])
+        good_kmers = list(good_kmers)
+        bad_kmers = [_ for _ in self.normalised_top_var_df.columns if _ not in good_kmers]
+        # Write out the kmer list so that we can map it to the ITS boundaries to get an idea of where the informative regions are
+        with open(f"LDA_driving_kmers_{top_kmer_n}.fa", "w") as f:
+            for kmer in good_kmers:
+                f.write(f">{kmer}\n")
+                f.write(f"{kmer}\n")
+        with open(f"LDA_top_kmers_{top_kmer_n}.fa", "w") as f:
+            for kmer in top_kmers:
+                f.write(f">{kmer}\n")
+                f.write(f"{kmer}\n")
+
+        var_df = self.normalised_top_var_df.var(axis=0)
+        good_var = pd.Series(var_df[good_kmers], name="good")
+        bad_var = pd.Series(var_df[bad_kmers], name="bad")
+        # Look to see what the distribution of the good and bad look like
+        fig, ax = plt.subplots(ncols=1, nrows=1, figsize=(5,5))
+        ax.scatter(x = [1 for _ in range(len(good_var))], y = good_var.values)
+        ax.scatter(x = [2 for _ in range(len(bad_var))], y = bad_var.values)
+        ax.set_ylim(0,4.3e-8)
         plt.close()
+        # Look to see what the PCA looks like with just the good kmers used
+        # good_kmer_df = self.normalised_df[good_kmers]
+        good_kmer_df = self.normalised_top_var_df
+        x = good_kmer_df.values
+        # Standardizing the features
+        x = StandardScaler().fit_transform(x)
+        pca = PCA()
+        principalComponents = pca.fit_transform(x)
+        principalDf = pd.DataFrame(data = principalComponents, columns = [f"PC{_+1}" for _ in range(principalComponents.shape[1])], index=good_kmer_df.index)
+
+        # fig, ax_arr = plt.subplots(ncols=3, nrows=1, figsize=(15,5))
+        # explained = [_/pca.explained_variance_.sum() for _ in pca.explained_variance_]
+        # colours = [self.svd_color_dict[self.meta_info_df.at[_,"svd"]] for _ in principalDf.index]
+        # ax_arr[0].scatter(principalDf["PC1"], principalDf["PC2"], c=colours)
+        # ax_arr[0].set_xlabel(f"PC1: {explained[0]}")
+        # ax_arr[0].set_ylabel(f"PC2: {explained[1]}")
+        
+        # ax_arr[1].scatter(principalDf["PC1"], principalDf["PC3"], c=colours)
+        # ax_arr[1].set_xlabel(f"PC1: {explained[0]}")
+        # ax_arr[1].set_ylabel(f"PC3: {explained[2]}")
+        
+        # ax_arr[2].scatter(principalDf["PC1"], principalDf["PC4"], c=colours)
+        # ax_arr[2].set_xlabel(f"PC1: {explained[0]}")
+        # ax_arr[2].set_ylabel(f"PC4: {explained[3]}")
+        # plt.tight_layout()
+        # plt.close()
+
+        
+        # fig, ax = plt.subplots(ncols=1, nrows=1, figsize=(5,5))
+        # # Also want to see what the split is according ot the single magical 21-mer
+        # ax.scatter(self.normalised_df[list(top_kmers)[0]], [1 for _ in range(len(self.normalised_df.index))], c=[self.svd_color_dict[self.meta_info_df.at[_,"svd"]] for _ in self.normalised_df.index])
+        # plt.close()
+
+
+        # For each of the kmers we will plot up the variance against the highest ranking in the four scalings
+        # We can also plot up the abundance 
+
+        # Also let's look at the distribution of the variance!
+
+        # So we know from all of this that the most predictive kmers do have a significantly higher variation than the less predicive, but
+        # there is a large overlap. SO this is not directly a metric that we can use to further highlight the meaningful kmers.
+
+        # The last think to try is to look at the region that the sequences map to.
+
+        foo = "bar"
+        # Don't forget to check to see at what depth we'll need to be sequencing to pickup the meaningful kmers
+        
 
         foo = "bar"
 
-JellyCount().investigate_LDA_kmers()
+JellyCount().kmer_mapping()
